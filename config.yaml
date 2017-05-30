@@ -1,0 +1,18 @@
+source:
+  account_number: 945671751555
+  aws_access_key_id: ...
+  aws_secret_access_key: ...
+  aws_region: us-east-1
+
+destination:
+  account_number: 945671751555
+  aws_user: username
+  aws_access_key_id: ...
+  aws_secret_access_key: ...
+  aws_region: us-east-1
+  enable_bucket_versioning: true
+  sync_sse: AES256
+
+buckets:
+  saso-test: saso-test
+  saso-test-2: us-east-1-checkr-saso-test
