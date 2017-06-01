@@ -14,5 +14,5 @@ destination:
   sync_sse: AES256
 
 buckets:
-  saso-test: saso-test
-  saso-test-2: us-east-1-checkr-saso-test
+  saso-test-1: us-east-1-checkr-saso-test-1
+  saso-test-2: us-east-1-checkr-saso-test-2

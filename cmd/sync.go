@@ -269,7 +269,7 @@ func awsCliRun(params []string) error {
 	cmd.Env = env
 
 	cmdOut, _ := cmd.StdoutPipe()
-	//cmdErr, _ := cmd.StderrPipe()
+	cmdErr, _ := cmd.StderrPipe()
 
 	startErr := cmd.Start()
 	if startErr != nil {
@@ -278,10 +278,10 @@ func awsCliRun(params []string) error {
 
 	// read stdout and stderr
 	stdOutput, _ := ioutil.ReadAll(cmdOut)
-	//errOutput, _ := ioutil.ReadAll(cmdErr)
+	errOutput, _ := ioutil.ReadAll(cmdErr)
 
 	fmt.Printf("STDOUT: %s\n", stdOutput)
-	//fmt.Printf("ERROUT: %s\n", errOutput)
+	fmt.Printf("ERROUT: %s\n", errOutput)
 
 	err = cmd.Wait()
 
