@@ -99,7 +99,8 @@ to quickly create a Cobra application.`,
 			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetString("source.aws_region"))
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "NotFound" {
-					//fmt.Fprintf(os.Stderr, "unable to find bucket %s's region not found\n", bucket.Name)
+					log.Printf("ERROR: bucket(%s) not found\n", sourceBucketName)
+					return
 				}
 			}
 
@@ -124,6 +125,7 @@ to quickly create a Cobra application.`,
 						log.Fatal(err)
 					}
 				}
+				//log.Fatal(err)
 			} else {
 				policy := bucketPolicyizer.Policy{}
 				if err := json.Unmarshal([]byte(*resp.Policy), &policy); err != nil {
@@ -151,7 +153,7 @@ to quickly create a Cobra application.`,
 			_, err = svcDestinationBucket.CreateBucket(createBucketParams)
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "BucketAlreadyExists" {
-					log.Printf("bucket %s already exists\n", destinationBucketName)
+					log.Printf("bucket(%s) already exists\n", destinationBucketName)
 				} else {
 					log.Fatal(err)
 				}
@@ -185,7 +187,7 @@ to quickly create a Cobra application.`,
 			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", sourceBucketName))
 			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", destinationBucketName))
 
-			log.Printf("Running bucket(%s) => bucket(%s) sync", sourceBucketName, destinationBucketName)
+			log.Printf("Syncing bucket(%s) => bucket(%s)", sourceBucketName, destinationBucketName)
 			if err = awsCliRun(syncCmd); err != nil {
 				log.Fatal(err)
 			}
@@ -280,8 +282,12 @@ func awsCliRun(params []string) error {
 	stdOutput, _ := ioutil.ReadAll(cmdOut)
 	errOutput, _ := ioutil.ReadAll(cmdErr)
 
-	fmt.Printf("STDOUT: %s\n", stdOutput)
-	fmt.Printf("ERROUT: %s\n", errOutput)
+	if string(stdOutput) != "" {
+		fmt.Printf("STDOUT: %s\n", stdOutput)
+	}
+	if string(errOutput) != "" {
+		fmt.Printf("ERROUT: %s\n", errOutput)
+	}
 
 	err = cmd.Wait()
 
