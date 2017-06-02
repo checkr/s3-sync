@@ -1,12 +1,29 @@
-# S3 bucket sync
+# Migrating S3 Buckets Across AWS Accounts
 
-```bash
-➜  s3-sync git:(master) go run main.go sync --config config.prod.yaml
-Using config file: config.prod.yaml
-2017/05/30 15:20:05 Creating user(saso) policy
-2017/05/30 15:20:06 Creating bucket(saso-test-1) policy
-2017/05/30 15:20:07 Creating bucket(us-east-1-checkr-saso-test-1)
-2017/05/30 15:20:08 Enabling bucket(us-east-1-checkr-saso-test-1) versioning
-2017/05/30 15:20:09 Running bucket(saso-test-1) => bucket(us-east-1-checkr-saso-test-1) sync
-copy: s3://saso-test/projects.csv to s3://us-east-1-checkr-saso-test-1/projects.csv
+There are a lot of steeps needed to migrate buckets across accounts and this tool automates them all!
+
+1. Before running copy `config.yaml` to `config.prod.yaml`, fill in the blanks for source and destination account and add buckets you would like to sync.
 ```
+source:
+  account_number: ...
+  aws_access_key_id: ...
+  aws_secret_access_key: ...
+  aws_region: ...
+
+destination:
+  account_number: ...
+  aws_user: username
+  aws_access_key_id: ...
+  aws_secret_access_key: ...
+  aws_region: ...
+  enable_bucket_versioning: true
+  sync_sse: AES256
+
+buckets:
+  saso-test-1: us-east-1-checkr-saso-test-1
+  saso-test-2: us-east-1-checkr-saso-test-2
+```
+
+2. Run the sync with `go run main.go sync --config config.prod.yaml`
+
+![s3-sync](https://github.com/checkr/s3-sync/blob/master/static/s3-sync.gif?raw=true)
