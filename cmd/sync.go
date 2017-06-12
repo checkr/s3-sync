@@ -14,10 +14,10 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -205,7 +205,7 @@ func createSourcePolicy(sourceBucketName string) bucketPolicyizer.Policy {
 		Sid:    "DelegateS3AccessForMigration",
 		Effect: "Allow",
 		Principal: bucketPolicyizer.Principal{
-			AWS: []string{viper.GetString("destination.account_number")},
+			AWS: []string{fmt.Sprintf("arn:aws:iam::%s:user/%s", viper.GetString("destination.account_number"), viper.GetString("destination.aws_user"))},
 		},
 		Action: bucketPolicyizer.Action{"s3:*"},
 		Resource: bucketPolicyizer.Resource{
@@ -270,23 +270,35 @@ func awsCliRun(params []string) error {
 	env = append(env, fmt.Sprintf("AWS_DEFAULT_REGION=%s", viper.GetString("destination.aws_region")))
 	cmd.Env = env
 
-	cmdOut, _ := cmd.StdoutPipe()
-	cmdErr, _ := cmd.StderrPipe()
+	cmdOut, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Println("Error creating StdoutPipe for Cmd", err)
+		os.Exit(1)
+	}
+
+	cmdErr, err := cmd.StderrPipe()
+	if err != nil {
+		log.Println("Error creating StderrPipe for Cmd", err)
+		os.Exit(1)
+	}
+
+	scanner1 := bufio.NewScanner(cmdOut)
+	go func() {
+		for scanner1.Scan() {
+			log.Printf("(aws cli) => %s\n", scanner1.Text())
+		}
+	}()
+
+	scanner2 := bufio.NewScanner(cmdErr)
+	go func() {
+		for scanner2.Scan() {
+			log.Printf("(aws cli) => %s\n", scanner2.Text())
+		}
+	}()
 
 	startErr := cmd.Start()
 	if startErr != nil {
 		return startErr
-	}
-
-	// read stdout and stderr
-	stdOutput, _ := ioutil.ReadAll(cmdOut)
-	errOutput, _ := ioutil.ReadAll(cmdErr)
-
-	if string(stdOutput) != "" {
-		fmt.Printf("STDOUT: %s\n", stdOutput)
-	}
-	if string(errOutput) != "" {
-		fmt.Printf("ERROUT: %s\n", errOutput)
 	}
 
 	err = cmd.Wait()
