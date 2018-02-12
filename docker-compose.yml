@@ -1,0 +1,9 @@
+version: '2'
+services:
+  redis:
+    image: redis
+    command: --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data

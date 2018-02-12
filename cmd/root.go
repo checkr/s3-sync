@@ -27,13 +27,12 @@ var cfgFile string
 // RootCmd represents the base command when called without any subcommands
 var RootCmd = &cobra.Command{
 	Use:   "s3-sync",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "A CLI tool for syncing s3 buckets between AWS accounts",
+	Long: `s3-sync is a tool designed to assist in the migration of s3 buckets between aws accounts.
+		   
+			This tool assists in the creation of IAM permissions for the migration.
+			
+			For information, issues, and contributions join us as https://github.com/checkr/s3-sync`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	//	Run: func(cmd *cobra.Command, args []string) { },
@@ -56,9 +55,18 @@ func init() {
 	// will be global for your application.
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.s3-sync.yaml)")
 
+	RootCmd.PersistentFlags().Bool("use-cache", true, "Use redis for request caching")
+	viper.BindPFlag("useCache", RootCmd.PersistentFlags().Lookup("use-cache"))
+
+	RootCmd.PersistentFlags().Bool("start-from-last-cached", true, "Start syncing from the last object cached")
+	viper.BindPFlag("startFromLastCached", RootCmd.PersistentFlags().Lookup("start-from-last-cached"))
+
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	RootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+
+	viper.SetDefault("max_sync_workers", 100)
+	viper.SetDefault("queue_size", 10000)
 }
 
 // initConfig reads in config file and ENV variables if set.

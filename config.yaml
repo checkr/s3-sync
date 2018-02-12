@@ -1,8 +1,19 @@
+max_sync_workers: 150
+queue_size: 10000
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+  poolsize: 1000
+  max_retries: 10
+
 source:
   account_number: 945671751555
   aws_access_key_id: ...
   aws_secret_access_key: ...
   aws_region: us-east-1
+  canonical_id: ...
 
 destination:
   account_number: 945671751555
@@ -12,6 +23,8 @@ destination:
   aws_region: us-east-1
   enable_bucket_versioning: true
   sync_sse: AES256
+  kms_master_key_id: ...
+  canonical_id: ...
 
 buckets:
   saso-test-1: us-east-1-checkr-saso-test-1

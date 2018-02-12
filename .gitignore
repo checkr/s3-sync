@@ -1,1 +1,4 @@
 config.*.yaml
+
+redis_data
+_vendor*

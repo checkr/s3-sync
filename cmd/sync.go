@@ -19,8 +19,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -29,10 +33,47 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/go-redis/redis"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/wwkeyboard/bucketPolicyizer"
 )
+
+const (
+	NETWORK_ERROR     = 10
+	PERMISSIONS_ERROR = 11
+	OTHER_ERROR       = 12
+)
+
+type SyncStatus struct {
+	TotalCount   int
+	ErrorCount   int
+	SuccessCount int
+	CachedCount  int
+	ElapsedTime  time.Duration
+	ErrorMap     map[int]int
+	SourceBucket string
+	DestBucket   string
+}
+
+type copyConfig struct {
+	SourceBucket      string
+	DestBucket        string
+	SourceCanonicalID string
+	DestCanonicalID   string
+}
+
+type copyOutput struct {
+	Success bool
+	Err     error
+	Message string
+	ErrID   int
+	Cached  bool
+}
+
+func init() {
+	RootCmd.AddCommand(syncCmd)
+}
 
 // syncCmd represents the sync command
 var syncCmd = &cobra.Command{
@@ -45,6 +86,9 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		useCache := viper.GetBool("useCache")
+
+		sourceRegion := viper.GetString("source.aws_region")
 		sourceSess := session.Must(session.NewSessionWithOptions(
 			session.Options{
 				Config: aws.Config{
@@ -53,10 +97,12 @@ to quickly create a Cobra application.`,
 						viper.GetString("source.aws_secret_access_key"),
 						"",
 					),
+					Region: &sourceRegion,
 				},
 			},
 		))
 
+		destRegion := viper.GetString("destination.aws_region")
 		destinationSess := session.Must(session.NewSessionWithOptions(
 			session.Options{
 				Config: aws.Config{
@@ -65,6 +111,7 @@ to quickly create a Cobra application.`,
 						viper.GetString("destination.aws_secret_access_key"),
 						"",
 					),
+					Region: &destRegion,
 				},
 			},
 		))
@@ -171,32 +218,267 @@ to quickly create a Cobra application.`,
 				_, err = svcDestinationBucket.PutBucketVersioning(bucketVersioningParams)
 				if err != nil {
 					log.Println(err.Error())
+					log.Println("ERROR")
 					return
+				}
+
+				encryptionScheme := viper.GetString("destination.sync_sse")
+				if encryptionScheme != "" {
+					encryptionAlgorithm := ""
+					kmsMasterKey := viper.GetString("destination.kms_master_key_id")
+					serverSideEncryptionParams := &s3.ServerSideEncryptionByDefault{}
+					if encryptionScheme == "AES256" {
+						encryptionAlgorithm = s3.ServerSideEncryptionAes256
+						serverSideEncryptionParams = &s3.ServerSideEncryptionByDefault{
+							SSEAlgorithm: &encryptionAlgorithm,
+						}
+					} else if encryptionScheme == "KMS" {
+						encryptionAlgorithm = s3.ServerSideEncryptionAwsKms
+						if kmsMasterKey == "" {
+							log.Printf("Bucket encryption scheme KMS requires you to provide a kms_master_key_id")
+						} else {
+							serverSideEncryptionParams = &s3.ServerSideEncryptionByDefault{
+								SSEAlgorithm:   &encryptionAlgorithm,
+								KMSMasterKeyID: &kmsMasterKey,
+							}
+						}
+					} else {
+						log.Printf("Bucket encryption scheme: %s is not valid", encryptionScheme)
+						return
+					}
+					encryptionAlgorithm = s3.ServerSideEncryptionAes256
+					bucketEncryptionParams := &s3.PutBucketEncryptionInput{
+						Bucket: aws.String(destinationBucketName),
+						ServerSideEncryptionConfiguration: &s3.ServerSideEncryptionConfiguration{
+							Rules: []*s3.ServerSideEncryptionRule{
+								&s3.ServerSideEncryptionRule{
+									ApplyServerSideEncryptionByDefault: serverSideEncryptionParams,
+								},
+							},
+						},
+					}
+					log.Printf("Enabling bucket(%s) encryption", destinationBucketName)
+					_, err = svcDestinationBucket.PutBucketEncryption(bucketEncryptionParams)
+					if err != nil {
+						log.Println(err.Error())
+						return
+					}
+
 				}
 			}
 
-			var syncCmd []string
-			syncCmd = append(syncCmd, "s3")
-			syncCmd = append(syncCmd, "sync")
+			destClient := s3.New(destinationSess)
+			sourceClient := s3.New(sourceSess)
 
-			if viper.GetString("destination.sync_sse") != "" {
-				syncCmd = append(syncCmd, "--sse")
-				syncCmd = append(syncCmd, viper.GetString("destination.sync_sse"))
+			sourceCanonicalID := viper.GetString("source.canonical_id")
+			destCanonicalID := viper.GetString("destination.canonical_id")
+
+			copyConfig := copyConfig{
+				SourceBucket:      sourceBucketName,
+				DestBucket:        destinationBucketName,
+				SourceCanonicalID: sourceCanonicalID,
+				DestCanonicalID:   destCanonicalID,
 			}
 
-			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", sourceBucketName))
-			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", destinationBucketName))
+			maxKeys := int64(1000)
+			fetchOwners := true
 
-			log.Printf("Syncing bucket(%s) => bucket(%s)", sourceBucketName, destinationBucketName)
-			if err = awsCliRun(syncCmd); err != nil {
-				log.Fatal(err)
+			listObjectsInput := s3.ListObjectsV2Input{
+				Bucket:     &sourceBucketName,
+				MaxKeys:    &maxKeys,
+				FetchOwner: &fetchOwners,
 			}
+
+			var redisClient *redis.Client = nil
+			if useCache {
+				redisClient = redis.NewClient(&redis.Options{
+					Addr:       viper.GetString("redis.addr"),
+					Password:   viper.GetString("redis.password"),
+					DB:         viper.GetInt("redis.db"),
+					PoolSize:   viper.GetInt("redis.poolsize"),
+					MaxRetries: viper.GetInt("redis.max_retries"),
+				})
+
+				_, err = redisClient.Ping().Result()
+				if err != nil {
+					log.Fatal("Can not connect to redis client.")
+				}
+
+				if viper.GetBool("startFromLastCached") {
+
+					val, _ := redisClient.Get(fmt.Sprintf("%s-LAST_CACHED_KEY", sourceBucketName)).Result()
+					if val != "" {
+						listObjectsInput.SetStartAfter(val)
+					}
+				}
+			}
+
+			var wg sync.WaitGroup
+			processQueue := make(chan *s3.Object, viper.GetInt("queue_size"))
+			resultsQueue := make(chan copyOutput, viper.GetInt("queue_size"))
+
+			go listObjects(sourceClient, &listObjectsInput, processQueue)
+
+			for i := 0; i < viper.GetInt("max_sync_workers"); i++ {
+				wg.Add(1)
+				go copyObject(destClient, &copyConfig, &wg, redisClient, processQueue, resultsQueue)
+			}
+
+			go func() {
+				wg.Wait()
+				close(resultsQueue)
+			}()
+
+			start := time.Now()
+			elapsedPerChunk := time.Now()
+			status := SyncStatus{
+				SuccessCount: 0,
+				TotalCount:   0,
+				ErrorCount:   0,
+				CachedCount:  0,
+				ErrorMap: map[int]int{
+					NETWORK_ERROR:     0,
+					PERMISSIONS_ERROR: 0,
+					OTHER_ERROR:       0,
+				},
+				SourceBucket: sourceBucketName,
+				DestBucket:   destinationBucketName,
+			}
+			for output := range resultsQueue {
+				if output.Success {
+					status.SuccessCount++
+				} else if !output.Success {
+					status.ErrorCount++
+
+					status.ErrorMap[output.ErrID]++
+				}
+				if output.Cached {
+					status.CachedCount++
+				}
+				// count++
+				status.ElapsedTime = time.Since(start)
+				status.TotalCount++
+				if status.TotalCount%10000 == 0 {
+					fmt.Printf("\nELAPSED SINCE LAST STATUS: %s\n", time.Since(elapsedPerChunk))
+					logStatus(status)
+					elapsedPerChunk = time.Now()
+				}
+			}
+
+			logStatus(status)
+			log.Println("COMPLETED SYNC FOR BUCKET")
 		}
 	},
 }
 
-func init() {
-	RootCmd.AddCommand(syncCmd)
+func logStatus(status SyncStatus) {
+	log.Println(fmt.Sprintf(
+		`
+SYNC STATUS: %s -> %s
+SUCCEEDED: %v, FAILED: %v, TOTAL: %v, ELAPSED_TIME: %s
+NETWORK_ERROR: %v,
+PERMISSIONS_ERROR: %v,
+OTHER_ERROR: %v,
+CACHED: %v
+`,
+		status.SourceBucket,
+		status.DestBucket,
+		status.SuccessCount,
+		status.ErrorCount,
+		status.TotalCount,
+		status.ElapsedTime,
+		status.ErrorMap[NETWORK_ERROR],
+		status.ErrorMap[PERMISSIONS_ERROR],
+		status.ErrorMap[OTHER_ERROR],
+		status.CachedCount))
+}
+
+func copyObject(s3Client *s3.S3, config *copyConfig, wg *sync.WaitGroup, redisClient *redis.Client, processQueue <-chan *s3.Object, resultsQueue chan<- copyOutput) {
+	for object := range processQueue {
+
+		useCache := viper.GetBool("useCache")
+		output := copyOutput{}
+		skip := false
+
+		cacheKey := fmt.Sprintf("%s-%s", config.SourceBucket, *object.Key)
+		lastCachedKey := fmt.Sprintf("%s-LAST_CACHED_KEY", config.SourceBucket)
+		if useCache {
+
+			redisErr := redisClient.Set(lastCachedKey, cacheKey, 0).Err()
+			if redisErr != nil {
+				log.Println("FAILED TO SET LAST KEY")
+			}
+
+			val, redisError := redisClient.Get(cacheKey).Result()
+			if redisError != nil && redisError != redis.Nil {
+				panic(redisError)
+			}
+			if val == "SUCCESS" {
+				output.Success = true
+				output.Message = "COPIED!"
+				output.Cached = true
+				resultsQueue <- output
+				skip = true
+			} else if val == fmt.Sprintf("FAILED-%v", PERMISSIONS_ERROR) {
+				output.Success = false
+				output.Message = "FAILED PERMISSIONS"
+				output.ErrID = PERMISSIONS_ERROR
+				output.Cached = true
+				resultsQueue <- output
+				skip = true
+			}
+
+		}
+
+		if skip == false {
+			encodedKey := url.URL{Path: *object.Key}
+			encodedKeyString := encodedKey.String()
+			cacheValue := ""
+
+			copySource := fmt.Sprintf("%s/%s", config.SourceBucket, encodedKeyString)
+			copyObjectInput := s3.CopyObjectInput{
+				Bucket:     &config.DestBucket,
+				CopySource: &copySource,
+				Key:        object.Key,
+			}
+			_, err := s3Client.CopyObject(&copyObjectInput)
+			if err != nil {
+				output.Success = false
+				output.Err = err
+				output.Message = fmt.Sprintf("ERROR COPYING %s to %s/%s", *copyObjectInput.CopySource, *copyObjectInput.Bucket, *copyObjectInput.Key)
+
+				if strings.Contains(err.Error(), "RequestError") {
+					output.ErrID = NETWORK_ERROR
+					cacheValue = fmt.Sprintf("FAILED-%v", NETWORK_ERROR)
+				} else if strings.Contains(err.Error(), "403") {
+					output.ErrID = PERMISSIONS_ERROR
+					cacheValue = fmt.Sprintf("FAILED-%v", PERMISSIONS_ERROR)
+
+				} else {
+					output.ErrID = OTHER_ERROR
+				}
+
+			} else {
+				output.Success = true
+				output.Err = nil
+				output.Message = fmt.Sprintf("COPIED %s TO %s/%s", *copyObjectInput.CopySource, *copyObjectInput.Bucket, *copyObjectInput.Key)
+
+				cacheValue = "SUCCESS"
+			}
+
+			if useCache {
+				redisErr := redisClient.Set(cacheKey, cacheValue, 0).Err()
+				if redisErr != nil {
+					log.Println(redisErr)
+				}
+			}
+
+			resultsQueue <- output
+		}
+	}
+
+	wg.Done()
+
 }
 
 func createSourcePolicy(sourceBucketName string) bucketPolicyizer.Policy {
