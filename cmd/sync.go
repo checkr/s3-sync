@@ -413,16 +413,19 @@ func copyObject(s3Client *s3.S3, config *copyConfig, wg *sync.WaitGroup, redisCl
 			if redisError != nil && redisError != redis.Nil {
 				panic(redisError)
 			}
-			if val == "SUCCESS" {
-				output.Success = true
-				output.Message = "COPIED!"
-				output.Cached = true
-				resultsQueue <- output
-				skip = true
-			} else if val == fmt.Sprintf("FAILED-%v", PERMISSIONS_ERROR) {
+			if val == fmt.Sprintf("FAILED-%v", PERMISSIONS_ERROR) {
 				output.Success = false
 				output.Message = "FAILED PERMISSIONS"
 				output.ErrID = PERMISSIONS_ERROR
+				output.Cached = true
+				resultsQueue <- output
+				skip = true
+			}
+
+			lastCopied, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", val)
+			if err == nil && lastCopied.After(*object.LastModified) || lastCopied.Equal(*object.LastModified) {
+				output.Success = true
+				output.Message = "COPIED!"
 				output.Cached = true
 				resultsQueue <- output
 				skip = true
@@ -456,6 +459,8 @@ func copyObject(s3Client *s3.S3, config *copyConfig, wg *sync.WaitGroup, redisCl
 
 				} else {
 					output.ErrID = OTHER_ERROR
+					log.Println(copyObjectInput.Bucket, *object.Key)
+					log.Println(err.Error())
 				}
 
 			} else {
@@ -463,7 +468,7 @@ func copyObject(s3Client *s3.S3, config *copyConfig, wg *sync.WaitGroup, redisCl
 				output.Err = nil
 				output.Message = fmt.Sprintf("COPIED %s TO %s/%s", *copyObjectInput.CopySource, *copyObjectInput.Bucket, *copyObjectInput.Key)
 
-				cacheValue = "SUCCESS"
+				cacheValue = object.LastModified.String()
 			}
 
 			if useCache {
