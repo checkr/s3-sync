@@ -69,31 +69,10 @@ to quickly create a Cobra application.`,
 			},
 		))
 
-		// Update destination user policy
-		svc := iam.New(destinationSess)
-
-		destinationUserPolicy, err := bucketPolicyizer.CompilePolicy(createDestinationUserPolicy())
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		params := &iam.PutUserPolicyInput{
-			PolicyDocument: aws.String(destinationUserPolicy),
-			PolicyName:     aws.String("DelegateS3AccessForMigration"),
-			UserName:       aws.String(viper.GetString("destination.aws_user")),
-		}
-
-		log.Printf("Creating user(%s) policy", viper.GetString("destination.aws_user"))
-		_, err = svc.PutUserPolicy(params)
-		if err != nil {
-			// Print the error, cast err to awserr.Error to get the Code and
-			// Message from an error.
-			fmt.Println(err.Error())
-			return
-		}
-
 		// Create buckets and policies
 		for sourceBucketName, destinationBucketName := range viper.GetStringMapString("buckets") {
+			updateDestinationUserPolicy(destinationSess, sourceBucketName, destinationBucketName)
+
 			// Get correct region
 			ctx := context.Background()
 			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetString("source.aws_region"))
@@ -236,16 +215,14 @@ func updateSourcePolicy(sourceBucketName string, existingPolicy bucketPolicyizer
 	return existingPolicy
 }
 
-func createDestinationUserPolicy() bucketPolicyizer.Policy {
+func createDestinationUserPolicy(sourceBucketName string, destinationBucketName string) bucketPolicyizer.Policy {
 	policy := bucketPolicyizer.EmptyPolicy()
 	var resources []string
 
-	for sourceBucketName, destinationBucketName := range viper.GetStringMapString("buckets") {
-		resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s/*", sourceBucketName))
-		resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s", sourceBucketName))
-		resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s/*", destinationBucketName))
-		resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s", destinationBucketName))
-	}
+	resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s/*", sourceBucketName))
+	resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s", sourceBucketName))
+	resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s/*", destinationBucketName))
+	resources = append(resources, fmt.Sprintf("arn:aws:s3:::%s", destinationBucketName))
 
 	policyStatment := bucketPolicyizer.Statement{
 		Effect:   "Allow",
@@ -255,6 +232,30 @@ func createDestinationUserPolicy() bucketPolicyizer.Policy {
 	policy.Statement = append(policy.Statement, policyStatment)
 
 	return policy
+}
+
+func updateDestinationUserPolicy(destinationSess *session.Session, sourceBucketName string, destinationBucketName string) {
+	svc := iam.New(destinationSess)
+
+	destinationUserPolicy, err := bucketPolicyizer.CompilePolicy(createDestinationUserPolicy(sourceBucketName, destinationBucketName))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	params := &iam.PutUserPolicyInput{
+		PolicyDocument: aws.String(destinationUserPolicy),
+		PolicyName:     aws.String("DelegateS3AccessForMigration"),
+		UserName:       aws.String(viper.GetString("destination.aws_user")),
+	}
+
+	log.Printf("Creating user(%s) policy", viper.GetString("destination.aws_user"))
+	_, err = svc.PutUserPolicy(params)
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		fmt.Println(err.Error())
+		return
+	}
 }
 
 func awsCliRun(params []string) error {
