@@ -152,7 +152,7 @@ to quickly create a Cobra application.`,
 			}
 			_, err = svcDestinationBucket.CreateBucket(createBucketParams)
 			if err != nil {
-				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "BucketAlreadyExists" {
+				if aerr, ok := err.(awserr.Error); ok && (aerr.Code() == "BucketAlreadyExists" || aerr.Code() == "BucketAlreadyOwnedByYou") {
 					log.Printf("bucket(%s) already exists\n", destinationBucketName)
 				} else {
 					log.Fatal(err)
