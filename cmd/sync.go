@@ -30,7 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
+	"github.com/useafterfree/viper"
 	"github.com/wwkeyboard/bucketPolicyizer"
 )
 
@@ -49,8 +49,8 @@ to quickly create a Cobra application.`,
 			session.Options{
 				Config: aws.Config{
 					Credentials: credentials.NewStaticCredentials(
-						viper.GetString("source.aws_access_key_id"),
-						viper.GetString("source.aws_secret_access_key"),
+						viper.GetStringEnv("source.aws_access_key_id"),
+						viper.GetStringEnv("source.aws_secret_access_key"),
 						"",
 					),
 				},
@@ -61,8 +61,8 @@ to quickly create a Cobra application.`,
 			session.Options{
 				Config: aws.Config{
 					Credentials: credentials.NewStaticCredentials(
-						viper.GetString("destination.aws_access_key_id"),
-						viper.GetString("destination.aws_secret_access_key"),
+						viper.GetStringEnv("destination.aws_access_key_id"),
+						viper.GetStringEnv("destination.aws_secret_access_key"),
 						"",
 					),
 				},
@@ -80,10 +80,10 @@ to quickly create a Cobra application.`,
 		params := &iam.PutUserPolicyInput{
 			PolicyDocument: aws.String(destinationUserPolicy),
 			PolicyName:     aws.String("DelegateS3AccessForMigration"),
-			UserName:       aws.String(viper.GetString("destination.aws_user")),
+			UserName:       aws.String(viper.GetStringEnv("destination.aws_user")),
 		}
 
-		log.Printf("Creating user(%s) policy", viper.GetString("destination.aws_user"))
+		log.Printf("Creating user(%s) policy", viper.GetStringEnv("destination.aws_user"))
 		_, err = svc.PutUserPolicy(params)
 		if err != nil {
 			// Print the error, cast err to awserr.Error to get the Code and
@@ -96,7 +96,7 @@ to quickly create a Cobra application.`,
 		for sourceBucketName, destinationBucketName := range viper.GetStringMapString("buckets") {
 			// Get correct region
 			ctx := context.Background()
-			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetString("source.aws_region"))
+			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetStringEnv("source.aws_region"))
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "NotFound" {
 					log.Printf("ERROR: bucket(%s) not found\n", sourceBucketName)
@@ -144,7 +144,7 @@ to quickly create a Cobra application.`,
 			}
 
 			// Create destination bucket
-			svcDestinationBucket := s3.New(destinationSess, aws.NewConfig().WithRegion(viper.GetString("destination.aws_region")))
+			svcDestinationBucket := s3.New(destinationSess, aws.NewConfig().WithRegion(viper.GetStringEnv("destination.aws_region")))
 
 			log.Printf("Creating bucket(%s)", destinationBucketName)
 			createBucketParams := &s3.CreateBucketInput{
@@ -179,9 +179,9 @@ to quickly create a Cobra application.`,
 			syncCmd = append(syncCmd, "s3")
 			syncCmd = append(syncCmd, "sync")
 
-			if viper.GetString("destination.sync_sse") != "" {
+			if viper.GetStringEnv("destination.sync_sse") != "" {
 				syncCmd = append(syncCmd, "--sse")
-				syncCmd = append(syncCmd, viper.GetString("destination.sync_sse"))
+				syncCmd = append(syncCmd, viper.GetStringEnv("destination.sync_sse"))
 			}
 
 			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", sourceBucketName))
@@ -205,7 +205,7 @@ func createSourcePolicy(sourceBucketName string) bucketPolicyizer.Policy {
 		Sid:    "DelegateS3AccessForMigration",
 		Effect: "Allow",
 		Principal: bucketPolicyizer.Principal{
-			AWS: []string{fmt.Sprintf("arn:aws:iam::%s:user/%s", viper.GetString("destination.account_number"), viper.GetString("destination.aws_user"))},
+			AWS: []string{fmt.Sprintf("arn:aws:iam::%s:user/%s", viper.GetStringEnv("destination.account_number"), viper.GetStringEnv("destination.aws_user"))},
 		},
 		Action: bucketPolicyizer.Action{"s3:*"},
 		Resource: bucketPolicyizer.Resource{
@@ -265,9 +265,9 @@ func awsCliRun(params []string) error {
 
 	cmd := exec.Command(binary, params...)
 	env := os.Environ()
-	env = append(env, fmt.Sprintf("AWS_ACCESS_KEY_ID=%s", viper.GetString("destination.aws_access_key_id")))
-	env = append(env, fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", viper.GetString("destination.aws_secret_access_key")))
-	env = append(env, fmt.Sprintf("AWS_DEFAULT_REGION=%s", viper.GetString("destination.aws_region")))
+	env = append(env, fmt.Sprintf("AWS_ACCESS_KEY_ID=%s", viper.GetStringEnv("destination.aws_access_key_id")))
+	env = append(env, fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", viper.GetStringEnv("destination.aws_secret_access_key")))
+	env = append(env, fmt.Sprintf("AWS_DEFAULT_REGION=%s", viper.GetStringEnv("destination.aws_region")))
 	cmd.Env = env
 
 	cmdOut, err := cmd.StdoutPipe()
