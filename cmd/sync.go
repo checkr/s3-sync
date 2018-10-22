@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 	"log"
 	"os"
 	"os/exec"
@@ -68,7 +69,7 @@ to quickly create a Cobra application.`,
 				},
 			},
 		))
-
+		
 		// Update destination user policy
 		svc := iam.New(destinationSess)
 
@@ -82,7 +83,7 @@ to quickly create a Cobra application.`,
 			PolicyName:     aws.String("DelegateS3AccessForMigration"),
 			UserName:       aws.String(viper.GetStringEnv("destination.aws_user")),
 		}
-
+		
 		log.Printf("Creating user(%s) policy", viper.GetStringEnv("destination.aws_user"))
 		_, err = svc.PutUserPolicy(params)
 		if err != nil {
@@ -96,7 +97,7 @@ to quickly create a Cobra application.`,
 		for sourceBucketName, destinationBucketName := range viper.GetStringMapString("buckets") {
 			// Get correct region
 			ctx := context.Background()
-			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetStringEnv("source.aws_region"))
+			region, err := s3manager.GetBucketRegion(ctx, sourceSess, sourceBucketName, viper.GetString("source.aws_region"))
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "NotFound" {
 					log.Printf("ERROR: bucket(%s) not found\n", sourceBucketName)
@@ -110,11 +111,12 @@ to quickly create a Cobra application.`,
 			}
 
 			// Create or update policy
-			log.Printf("Creating bucket(%s) policy", sourceBucketName)
+			log.Printf("Checking bucket(%s) policy", sourceBucketName)
 			resp, err := svcSourceBucket.GetBucketPolicy(params)
 			if err != nil {
 				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "NoSuchBucketPolicy" {
 					// Create new policy
+					log.Printf("Creating bucket(%s) policy", sourceBucketName)
 					policyJSON, _ := bucketPolicyizer.CompilePolicy(createSourcePolicy(sourceBucketName))
 					params := &s3.PutBucketPolicyInput{
 						Bucket: aws.String(sourceBucketName),
@@ -127,12 +129,15 @@ to quickly create a Cobra application.`,
 				}
 				//log.Fatal(err)
 			} else {
-				policy := bucketPolicyizer.Policy{}
-				if err := json.Unmarshal([]byte(*resp.Policy), &policy); err != nil {
+				originalPolicy := bucketPolicyizer.Policy{}
+				
+				if err := json.Unmarshal([]byte(*resp.Policy), &originalPolicy); err != nil {
 					panic(err)
 				}
+				
 
-				policyJSON, _ := bucketPolicyizer.CompilePolicy(updateSourcePolicy(sourceBucketName, policy))
+				log.Printf("Updating bucket(%s) original policy", sourceBucketName)
+				policyJSON, _ := bucketPolicyizer.CompilePolicy(updateSourcePolicy(sourceBucketName, originalPolicy))
 				params := &s3.PutBucketPolicyInput{
 					Bucket: aws.String(sourceBucketName),
 					Policy: aws.String(policyJSON),
@@ -145,19 +150,22 @@ to quickly create a Cobra application.`,
 
 			// Create destination bucket
 			svcDestinationBucket := s3.New(destinationSess, aws.NewConfig().WithRegion(viper.GetStringEnv("destination.aws_region")))
-
-			log.Printf("Creating bucket(%s)", destinationBucketName)
-			createBucketParams := &s3.CreateBucketInput{
-				Bucket: aws.String(destinationBucketName), // Required
-			}
-			_, err = svcDestinationBucket.CreateBucket(createBucketParams)
-			if err != nil {
-				if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "BucketAlreadyExists" {
-					log.Printf("bucket(%s) already exists\n", destinationBucketName)
-				} else {
-					log.Fatal(err)
+			
+			
+			if viper.GetBool("destination.create_bucket") {
+				log.Printf("Creating bucket(%s)", destinationBucketName)
+				createBucketParams := &s3.CreateBucketInput{
+					Bucket: aws.String(destinationBucketName), // Required
 				}
-			}
+				_, err = svcDestinationBucket.CreateBucket(createBucketParams)
+				if err != nil {
+					if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "BucketAlreadyExists" {
+						log.Printf("bucket(%s) already exists\n", destinationBucketName)
+					} else {
+						log.Fatal(err)
+					}
+				}
+			}			
 
 			if viper.GetBool("destination.enable_bucket_versioning") {
 				bucketVersioningParams := &s3.PutBucketVersioningInput{
@@ -166,7 +174,7 @@ to quickly create a Cobra application.`,
 						Status: aws.String("Enabled"),
 					},
 				}
-
+			
 				log.Printf("Enabling bucket(%s) versioning", destinationBucketName)
 				_, err = svcDestinationBucket.PutBucketVersioning(bucketVersioningParams)
 				if err != nil {
@@ -187,9 +195,46 @@ to quickly create a Cobra application.`,
 			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", sourceBucketName))
 			syncCmd = append(syncCmd, fmt.Sprintf("s3://%s", destinationBucketName))
 
+			log.Printf("Letting permissions coalesce for a bit (%s) => bucket(%s)", sourceBucketName, destinationBucketName)
+			time.Sleep(10 * time.Second)
 			log.Printf("Syncing bucket(%s) => bucket(%s)", sourceBucketName, destinationBucketName)
 			if err = awsCliRun(syncCmd); err != nil {
 				log.Fatal(err)
+			}
+
+
+			if viper.GetBool("remove_new_policies") {						
+				originalPolicy := bucketPolicyizer.Policy{}
+				
+				if err := json.Unmarshal([]byte(*resp.Policy), &originalPolicy); err != nil {
+					panic(err)
+				}
+				
+				policyJSON, _ := bucketPolicyizer.CompilePolicy(removeSourcePolicy(originalPolicy))
+				log.Printf("Restoring bucket(%s)'s original policy", sourceBucketName)
+				originalParams := &s3.PutBucketPolicyInput{
+					Bucket: aws.String(sourceBucketName),
+					Policy: aws.String(policyJSON),
+				}
+				_, err = svcSourceBucket.PutBucketPolicy(originalParams)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+		}
+		if viper.GetBool("remove_new_policies") {
+			deletePolicy := &iam.DeleteUserPolicyInput{
+				PolicyName:     aws.String("DelegateS3AccessForMigration"),
+				UserName:       aws.String(viper.GetStringEnv("destination.aws_user")),
+			}
+			
+			log.Printf("Deleting user(%s) policy", viper.GetStringEnv("destination.aws_user"))
+			_, err = svc.DeleteUserPolicy(deletePolicy)
+			if err != nil {
+				// Print the error, cast err to awserr.Error to get the Code and
+				// Message from an error.
+				fmt.Println(err.Error())
+				return
 			}
 		}
 	},
@@ -218,19 +263,32 @@ func createSourcePolicy(sourceBucketName string) bucketPolicyizer.Policy {
 	return policy
 }
 
+func removeSourcePolicy(existingPolicy bucketPolicyizer.Policy) bucketPolicyizer.Policy {
+	tmp := existingPolicy.Statement[:0]
+	for _, statment := range existingPolicy.Statement {
+		if statment.Sid != "DelegateS3AccessForMigration" {
+			tmp = append(tmp, statment)
+		}
+	}
+	
+	existingPolicy.Statement = tmp
+	return existingPolicy
+}
+
+
 func updateSourcePolicy(sourceBucketName string, existingPolicy bucketPolicyizer.Policy) bucketPolicyizer.Policy {
 	exists := false
-	policy := createSourcePolicy(sourceBucketName)
+	newPolicy := createSourcePolicy(sourceBucketName)
 
 	for i, statment := range existingPolicy.Statement {
 		if statment.Sid == "DelegateS3AccessForMigration" {
-			existingPolicy.Statement[i] = policy.Statement[0]
+			existingPolicy.Statement[i] = newPolicy.Statement[0]
 			exists = true
 		}
 	}
 
 	if exists == false {
-		existingPolicy.Statement = append(existingPolicy.Statement, policy.Statement[0])
+		existingPolicy.Statement = append(existingPolicy.Statement, newPolicy.Statement[0])
 	}
 
 	return existingPolicy
