@@ -4,6 +4,9 @@ There are a lot of steeps needed to migrate buckets across accounts and this too
 
 1. Before running copy `config.yaml` to `config.prod.yaml`, fill in the blanks for source and destination account and add buckets you would like to sync.
 ```
+
+remove_new_policies: true
+
 source:
   account_number: ...
   aws_access_key_id: ...
