@@ -1,6 +1,6 @@
 # Migrating S3 Buckets Across AWS Accounts
 
-There are a lot of steeps needed to migrate buckets across accounts and this tool automates them all!
+There are a lot of steps needed to migrate buckets across accounts and this tool automates them all!
 
 1. Before running copy `config.yaml` to `config.prod.yaml`, fill in the blanks for source and destination account and add buckets you would like to sync.
 ```
